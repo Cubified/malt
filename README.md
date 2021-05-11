@@ -6,7 +6,7 @@ In its current state, `malt` is not ready for heavy use.  While the internals ar
 
 ### Demo
 
-![Demo](https://github.com/Cubified/malt/blob/main/malt.png)
+![Demo](https://github.com/Cubified/malt/blob/main/demo.png)
 
 ### Compiling and Running
 
