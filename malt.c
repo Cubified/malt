@@ -24,28 +24,28 @@
 #define GLYPH(x, y) p->buf[(y*p->box_w)+x]
 #define RUNE(x, y)  GLYPH(x, y).rune
 #define FMT(x, y)   GLYPH(x, y).fmt
-#define PUTGLYPH(x, y) printf("\x1b[%i;%iH%s%c", y+p->box_y, x+p->box_x, FMT(x, y), RUNE(x, y))
+#define PUTGLYPH(x, y) printf("\x1b[%i;%iH%s%s", y+p->box_y, x+p->box_x, FMT(x, y), RUNE(x, y))
 #define PUTCURSOR(x, y) printf("\x1b[%i;%iH", y+p->box_y, x+p->box_x)
 
 #define CURSOR_GLYPH GLYPH(p->cur_x, p->cur_y)
 #define CURSOR_RUNE  CURSOR_GLYPH.rune
 #define CURSOR_FMT   CURSOR_GLYPH.fmt
 
-#define CURSOR_ADVANCE_CHAR() p->cur_x++;if(p->cur_x>p->box_w){p->cur_x=1;p->cur_y++;}
-#define CURSOR_ADVANCE_LINE() p->cur_x=1;p->cur_y++;
+#define CURSOR_ADVANCE_CHAR() p->cur_x++;if(p->cur_x>p->box_w){CURSOR_ADVANCE_LINE();}
+#define CURSOR_ADVANCE_LINE() p->cur_x=1;p->cur_y++;if(p->cur_y+1>p->box_h){p->cur_y=1;}
+//memmove(p->buf, p->buf+(p->box_w*sizeof(glyph)), (p->box_w*(p->box_h-1))*sizeof(glyph));p->cur_y--;malt_draw(full, p);}
 
-#define WCHAR_PUSH_BYTE() out[i_out]|=in[i_in++]&0xff;out[i_out]<<=8
-#define WCHAR_PUSH_BYTE_END() out[i_out++]|=in[i_in++]&0xff;continue
+#define ESC_NO_ARG -1
 
 enum parser_state {
   await,
   esc,
-  args,
+  arg,
   finish
 };
 
 typedef struct glyph {
-  wchar_t rune;
+  unsigned char rune[6];
   char fmt[64];
 } glyph;
 
@@ -82,33 +82,28 @@ void sig(int s __attribute__((unused))){
   kill(s, pty_cur->pid);
 }
 
-int utf8_parse(char *in, int n, wchar_t *out){
-  int i_in, i_out = 0;
-  for(i_in=0;i_in<n;){
-    out[i_out] = 0;
-    /*
-     * Most characters the terminal prints are
-     * ASCII (<= 0x7f), meaning checking for
-     * four-byte sequences first is slow
-     */
+static inline void utf8ify(unsigned char *buf, int *ind, unsigned char *rune){
+  rune[0] = buf[*ind];
 
-    if((in[i_in] & 0xf0) == 0xf0){
-      WCHAR_PUSH_BYTE();
-      WCHAR_PUSH_BYTE();
-      WCHAR_PUSH_BYTE();
-      WCHAR_PUSH_BYTE_END();
-    } else if((in[i_in] & 0xe0) == 0xe0){
-      WCHAR_PUSH_BYTE();
-      WCHAR_PUSH_BYTE();
-      WCHAR_PUSH_BYTE_END();
-    } else if((in[i_in] & 0xc0) == 0xc0){
-      WCHAR_PUSH_BYTE();
-      WCHAR_PUSH_BYTE_END();
-    } else {
-      WCHAR_PUSH_BYTE_END();
-    }
+  if(buf[*ind] <= 0x7f){
+    rune[1] = '\0';
+    return;
   }
-  return i_out;
+
+  rune[1] = buf[(*ind)+1];
+  if((buf[*ind] & 0xe0) == 0xe0){
+    rune[2] = buf[(*ind)+2];
+    if((buf[*ind] & 0xf0) == 0xf0){
+      rune[3] = buf[(*ind)+3];
+      rune[4] = '\0';
+      *ind += 3;
+    } else {
+      rune[3] = '\0';
+      *ind += 2;
+    }
+  } else {
+    *ind += 1;
+  }
 }
 
 void malt_draw(int type, pty *p){
@@ -118,7 +113,7 @@ void malt_draw(int type, pty *p){
     for(x=1;x<p->box_w;x++){
       PUTGLYPH(x, p->cur_y);
     }
-    printf("\x1b[%i;%iH\x1b[?25%c", pty_cur->cur_y+pty_cur->box_y, pty_cur->cur_x+pty_cur->box_x, pty_cur->cursor);
+    printf("\x1b[%i;%iH\x1b[0m\x1b[?25%c", pty_cur->cur_y+pty_cur->box_y, pty_cur->cur_x+pty_cur->box_x, pty_cur->cursor);
   } else if(type == full){
     puts("\x1b[?25l");
     for(y=1;y<p->box_h;y++){
@@ -139,7 +134,7 @@ void malt_draw(int type, pty *p){
     for(y=p->box_y;y<p->box_y+p->box_h;y++){
       printf("\x1b[%i;%iH \x1b[%i;%iH ", y, p->box_x, y, p->box_x+p->box_w);
     }
-    printf("\x1b[%i;%iH\x1b[0m \b\x1b[?25%c", pty_cur->cur_y+pty_cur->box_y, pty_cur->cur_x+pty_cur->box_x, pty_cur->cursor);
+    printf("\x1b[%i;%iH\x1b[0m\x1b[?25%c", pty_cur->cur_y+pty_cur->box_y, pty_cur->cur_x+pty_cur->box_x, pty_cur->cursor);
   }
   if(doflush) fflush(stdout);
 }
@@ -160,7 +155,7 @@ void malt_tile(){
 
   rows = count / cols;
 
-  col_h = ws.ws_row-30;
+  col_h = ws.ws_row;
   col_w = ws.ws_col / (cols ? cols : 1);
   col_n = 0;
   row_n = 0;
@@ -200,20 +195,21 @@ void malt_tile(){
  * Simple goto-based finite-state machine,
  * inspired by sajson
  */
-void esc_parse(char *in, int n, pty *p){
+void esc_parse(unsigned char *in, int n, pty *p){
   int i = -1, j = 0;
   char intermed = '\0';
 
   switch(esc_state){
     case esc:
       goto csi_or_esc;
-    case args:
+    case arg:
       goto args;
     case finish:
+      i = 0;
       goto finish_seq;
     default:
       arg_ind = 0;
-      args[0] = 0;
+      args[0] = ESC_NO_ARG;
       break;
   }
 
@@ -232,9 +228,13 @@ await_esc:;
       break;
     case '\b':
       if(p->cur_x > 1) p->cur_x--;
+      malt_draw(line, p);
+      break;
+    case '\a':
+      /* bell */
       break;
     default:
-      CURSOR_RUNE = in[i];
+      utf8ify(in, &i, CURSOR_RUNE);
       strcpy(CURSOR_FMT, p->fmt);
       PUTGLYPH(p->cur_x, p->cur_y);
       CURSOR_ADVANCE_CHAR();
@@ -254,7 +254,7 @@ csi_or_esc:;
         j<p->box_w*p->box_h;
         j++
       ){
-        p->buf[j].rune = ' ';
+        p->buf[j].rune[0] = '\0';
         p->buf[j].fmt[0] = '\0';
       }
       p->cur_x = 1;
@@ -263,16 +263,20 @@ csi_or_esc:;
       malt_draw(full, p);
     }
   }
+  i--;
   goto await_esc;
 
 args:;
-  esc_state = args;
+  esc_state = arg;
   if(in[++i] >= '0' &&
-     in[i] <= '9'){
-    args[arg_ind] *= 10;
-    args[arg_ind] += in[i] - '0';
+     in[i]   <= '9'){
+    if(args[arg_ind] == ESC_NO_ARG) args[arg_ind] = in[i] - '0';
+    else {
+      args[arg_ind] *= 10;
+      args[arg_ind] += in[i] - '0';
+    }
   } else if(in[i] == ';'){
-    args[++arg_ind] = 0;
+    args[++arg_ind] = ESC_NO_ARG;
   } else if(in[i] == '?'){
     intermed = '?';
   } else {
@@ -283,12 +287,17 @@ args:;
 
 finish_seq:;
   esc_state = finish;
+  if(in[i] >= 'A' &&
+     in[i] <= 'H'){
+    if(args[0] == ESC_NO_ARG) args[0] = 1;
+    if(args[1] == ESC_NO_ARG) args[1] = 1;
+  }
   switch(in[i]){
     case 'A':
-      p->cur_y -= args[0];
+      if(p->cur_y > 1) p->cur_y -= args[0];
       break;
     case 'B':
-      p->cur_y += args[0];
+      if(p->cur_y < p->box_h) p->cur_y += args[0];
       break;
     case 'C':
       if(p->cur_x < p->box_w) p->cur_x += args[0];
@@ -311,8 +320,12 @@ finish_seq:;
       p->cur_y = args[0];
       if(arg_ind == 0) p->cur_x = args[0];
       else if(arg_ind == 2) p->cur_x = args[1];
+
+      if(p->cur_x > p->box_w) p->cur_x = p->box_w;
+      if(p->cur_y > p->box_h) p->cur_y = p->box_h;
       break;
     case 'J':
+      if(args[0] == ESC_NO_ARG) args[0] = 0;
       if(arg_ind == 0 ||
          args[0] == 0){
         for(
@@ -320,7 +333,8 @@ finish_seq:;
           j<((p->cur_y*p->box_w)+p->cur_x)+(((p->box_h-p->cur_y)*p->box_w)-p->cur_x);
           j++
         ){
-          p->buf[j].rune = ' ';
+          p->buf[j].rune[0] = ' ';
+          p->buf[j].rune[1] = '\0';
           p->buf[j].fmt[0] = '\0';
         }
       } else if(args[0] == 1){
@@ -329,7 +343,8 @@ finish_seq:;
           j<((p->cur_y*p->box_w)-p->cur_x);
           j++
         ){
-          p->buf[j].rune = ' ';
+          p->buf[j].rune[0] = ' ';
+          p->buf[j].rune[1] = '\0';
           p->buf[j].fmt[0] = '\0';
         }
       } else if(args[0] == 2){
@@ -338,13 +353,15 @@ finish_seq:;
           j<p->box_w*p->box_h;
           j++
         ){
-          p->buf[j].rune = ' ';
+          p->buf[j].rune[0] = ' ';
+          p->buf[j].rune[1] = '\0';
           p->buf[j].fmt[0] = '\0';
         }
       }
       malt_draw(full, p);
       break;
     case 'K':
+      if(args[0] == ESC_NO_ARG) args[0] = 0;
       if(arg_ind == 0 ||
          args[0] == 0){
         for(
@@ -352,7 +369,8 @@ finish_seq:;
           j<(p->cur_y*p->box_w)+p->cur_x+(p->box_w-p->cur_x);
           j++
         ){
-          p->buf[j].rune = ' ';
+          p->buf[j].rune[0] = ' ';
+          p->buf[j].rune[1] = '\0';
           p->buf[j].fmt[0] = '\0';
         }
       } else if(args[0] == 1){
@@ -361,7 +379,8 @@ finish_seq:;
           j<(p->cur_y*p->box_w)+p->cur_x;
           j++
         ){
-          p->buf[j].rune = ' ';
+          p->buf[j].rune[0] = ' ';
+          p->buf[j].rune[1] = '\0';
           p->buf[j].fmt[0] = '\0';
         }
       } else if(args[0] == 2){
@@ -370,7 +389,8 @@ finish_seq:;
           j<(p->cur_y*p->box_w)+p->box_w;
           j++
         ){
-          p->buf[j].rune = ' ';
+          p->buf[j].rune[0] = ' ';
+          p->buf[j].rune[1] = '\0';
           p->buf[j].fmt[0] = '\0';
         }
       }
@@ -390,10 +410,18 @@ finish_seq:;
       strcpy(p->fmt, "\x1b[");
       for(j=0;j<arg_ind;j++){
         if(j > 0) strcat(p->fmt, ";");
+        if(args[j] == ESC_NO_ARG) args[j] = 0;
         sprintf(p->fmt+strlen(p->fmt), "%i", args[j]);
       }
       strcat(p->fmt, "m");
       break;
+  }
+  if(in[i] >= 'A' &&
+     in[i] <= 'H'){
+    malt_draw(deco, p);
+  } else if(in[i] >= 'J' &&
+            in[i] <= 'K'){
+    malt_draw(full, p);
   }
   intermed = '\0';
   args[(arg_ind=0)] = 0;
@@ -410,7 +438,7 @@ void pty_add(){
     fds[0].events = POLLIN;
   }
 
-  p = mmap(0, sizeof(pty), PROT_READ|PROT_WRITE, MAP_SHARED|MAP_ANONYMOUS, 0, 0);
+  p = malloc(sizeof(pty));
 
   if((p->pid
         = forkpty(&(p->fd), NULL, NULL, NULL))
@@ -451,7 +479,7 @@ hit:;
     pool_pop(ind, pool_ptys);
     if(pool_count(pool_ptys) == 0){
       pool_foreach(pool_ptys){
-        munmap(pool_get(ind, pool_ptys), sizeof(pty));
+        free(pool_get(ind, pool_ptys));
       }
       pool_free(pool_ptys);
       tcsetattr(STDOUT_FILENO, TCSANOW, &tio);
@@ -459,7 +487,7 @@ hit:;
       exit(0);
     } else {
       if(pty_cur == p) pty_cur = pool_get(pool_adj(ind, DIR_RIGHT, pool_ptys), pool_ptys);
-      munmap(p, sizeof(pty));
+      free(p);
       malt_tile();
     }
   }
@@ -467,8 +495,7 @@ hit:;
 
 _Noreturn void malt_loop(){
   int nread, cmd = 0;
-  char tmp[BUFSIZE];
-  wchar_t wtmp[BUFSIZE];
+  unsigned char tmp[BUFSIZE];
   pty *p, *pty_old;
 
   for(;;){
@@ -545,10 +572,8 @@ skip_write:;
           nread = read(p->fd, tmp, BUFSIZE);
           if(nread > 0){
             esc_parse(tmp, nread, p);
-//            esc_parse(wtmp, utf8_parse(tmp, nread, wtmp), p);
             fflush(stdout);
             memset(tmp, '\0', BUFSIZE);
-            memset(wtmp, '\0', BUFSIZE*sizeof(wchar_t));
           }
         }
       }
@@ -576,6 +601,5 @@ int main(){
 
   malt_loop();
 
-  __builtin_unreachable();
   return 0;
 }

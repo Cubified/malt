@@ -1,6 +1,7 @@
 all: malt
 
-CC=gcc
+CC=tcc
+DEBUGCC=gcc
 
 LIBS=
 CFLAGS=-Os -pipe -s
@@ -16,7 +17,7 @@ malt:
 	$(CC) $(INPUT) -o $(OUTPUT) $(LIBS) $(CFLAGS)
 
 debug:
-	$(CC) $(INPUT) -o $(OUTPUT) $(LIBS) $(DEBUGCFLAGS)
+	$(DEBUGCC) $(INPUT) -o $(OUTPUT) $(LIBS) $(DEBUGCFLAGS)
 
 clean:
 	if [ -e $(OUTPUT) ]; then $(RM) $(OUTPUT); fi

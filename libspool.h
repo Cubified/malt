@@ -129,17 +129,13 @@ int next_unset_bit(int n, int start){
  * Initializes a new memory pool by allocating
  * a block of preset size, removing continued
  * calls to malloc() which slow execution
- *
- * Note: This has been changed from the standard
- * version on github to use mmap() rather than
- * malloc()
  */
 pool *pool_init(int size){
-  pool *p = mmap(0, sizeof(pool), PROT_READ|PROT_WRITE, MAP_SHARED|MAP_ANONYMOUS, 0, 0);
+  pool *p = malloc(sizeof(pool));
   p->ind = 0;
   p->size = size;
   p->avail = set_all(size);
-  p->pool = mmap(0, sizeof(void*)*size, PROT_READ|PROT_WRITE, MAP_SHARED|MAP_ANONYMOUS, 0, 0);
+  p->pool = malloc(sizeof(void*)*size);
 
   return p;
 }
@@ -227,8 +223,8 @@ int pool_find(void *data, pool *p){
  * arrays
  */
 void pool_free(pool *p){
-  munmap(p->pool, sizeof(void*)*p->size);
-  munmap(p, sizeof(pool));
+  free(p->pool);
+  free(p);
 }
 
 #endif
